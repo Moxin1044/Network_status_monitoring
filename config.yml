@@ -1,0 +1,2 @@
+feishu_webhook: "*"
+check_interval: 30

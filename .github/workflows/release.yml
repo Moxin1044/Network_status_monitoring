@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: amd64
+          - target: i686-unknown-linux-gnu
+            arch: "386"
+          - target: armv7-unknown-linux-gnueabihf
+            arch: arm
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        run: cargo install cross --locked
+
+      - name: Build
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          mkdir -p package
+          cp target/${{ matrix.target }}/release/network_status_monitoring package/
+          cp config.yml package/
+          cp scripts/install-linux.sh package/install.sh
+          chmod +x package/install.sh package/network_status_monitoring
+          tar czf network-status-monitoring-linux-${{ matrix.arch }}.tar.gz -C package .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: network-status-monitoring-linux-${{ matrix.arch }}.tar.gz
+
+  build-windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            arch: amd64
+          - target: i686-pc-windows-msvc
+            arch: "386"
+          - target: aarch64-pc-windows-msvc
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install ARM64 MSVC build tools
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $vsPath = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
+          if (-not (Test-Path "$vsPath\VC\Tools\MSVC\*\bin\Hostx64\arm64\cl.exe")) {
+            $setupExe = Get-ChildItem "$vsPath\Common7\IDE\Setup\Setup.exe" -ErrorAction SilentlyContinue
+            if ($setupExe) {
+              & $setupExe.FullName modify --installPath $vsPath --add Microsoft.VisualStudio.Component.VC.Tools.ARM64 --passive --norestart
+            }
+          }
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/network_status_monitoring.exe" package/
+          Copy-Item config.yml package/
+          Copy-Item scripts/install-windows.bat package/install.bat
+          Compress-Archive -Path package/* -DestinationPath network-status-monitoring-windows-${{ matrix.arch }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: network-status-monitoring-windows-${{ matrix.arch }}.zip
+
+  release:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+          generate_release_notes: true
